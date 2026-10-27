@@ -4,12 +4,15 @@ import sqlite3
 from flask import Flask, abort, render_template_string
 
 from step9_save_analysis import get_evidence
+from step11_run_status import add_status_columns
 
 app = Flask(__name__)
 
 
 def db():
-    return sqlite3.connect("chat.db")
+    conn = sqlite3.connect("chat.db")
+    add_status_columns(conn)  # make sure old databases get the new columns
+    return conn
 
 
 def as_messages(rows):
@@ -19,7 +22,7 @@ def as_messages(rows):
 def load_run(conn, run_id):
     """Gather everything the page needs for one analysis run, or None if it doesn't exist."""
     run = conn.execute("""
-        SELECT r.id, c.title, r.created_at
+        SELECT r.id, c.title, r.created_at, r.status, r.error
         FROM analysis_runs r JOIN chats c ON c.id = r.chat_id
         WHERE r.id = ?
     """, (run_id,)).fetchone()
@@ -51,7 +54,7 @@ def load_run(conn, run_id):
     ).fetchone()
 
     return {
-        "id": run[0], "title": run[1], "created_at": run[2],
+        "id": run[0], "title": run[1], "created_at": run[2], "status": run[3], "error": run[4],
         "timeline": timeline, "roles": roles,
         "narrative": summary[0] if summary else None,
         "limitations": json.loads(summary[1]) if summary else [],
@@ -67,6 +70,7 @@ STYLE = """
   .high { background: #cfe9cf; } .medium { background: #fbe9b7; } .low { background: #f4cccc; }
   .msg { white-space: pre-wrap; margin: .3rem 0; padding: .4rem .6rem; background: #f6f6f6; border-radius: 6px; font-size: .9rem; }
   .counter .msg { background: #fdeeee; }
+  .done { background: #cfe9cf; } .running { background: #fbe9b7; } .failed { background: #f4cccc; }
   .note { color: #666; font-size: .9rem; }
   summary { cursor: pointer; color: #345; }
 </style>
@@ -75,8 +79,9 @@ STYLE = """
 HOME = STYLE + """
 <h1>Chat analyses</h1>
 {% if runs %}
-  {% for id, title, created in runs %}
+  {% for id, title, created, status in runs %}
     <div class="card"><a href="/run/{{ id }}">Run {{ id }}: {{ title or "Untitled chat" }}</a>
+    <span class="badge {{ status }}">{{ status }}</span>
     <div class="note">{{ created }}</div></div>
   {% endfor %}
 {% else %}
@@ -88,6 +93,12 @@ RUN = STYLE + """
 <p><a href="/">&larr; All analyses</a></p>
 <h1>{{ run.title or "Untitled chat" }}</h1>
 <p class="note">Findings are what the messages suggest, not verdicts. Open any claim to check the messages behind it.</p>
+
+{% if run.status == "failed" %}
+  <div class="card failed"><strong>This analysis failed.</strong> {{ run.error }}</div>
+{% elif run.status == "running" %}
+  <div class="card running">This analysis is still running, or was interrupted.</div>
+{% endif %}
 
 <h2>Roles</h2>
 {% for r in run.roles %}
@@ -128,7 +139,7 @@ RUN = STYLE + """
 def home():
     conn = db()
     runs = conn.execute("""
-        SELECT r.id, c.title, r.created_at
+        SELECT r.id, c.title, r.created_at, r.status
         FROM analysis_runs r JOIN chats c ON c.id = r.chat_id
         ORDER BY r.id DESC
     """).fetchall()
