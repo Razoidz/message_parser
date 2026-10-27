@@ -1,0 +1,9 @@
+12/03/2024, 14:05 - Messages are end-to-end encrypted.
+12/03/2024, 14:05 - Alice: Should we book the cabin?
+I think Friday works
+12/03/2024, 14:06 - Bob: Fine by me
+12/03/2024, 14:07 - Carol added Dan
+12/03/2024, 14:08 - Carol: Let's do it
+12/03/2024, 14:09 - Alice: Booking now
+12/03/2024, 14:09 - Carol: Great
+12/03/2024, 14:09 - Alice: Done!

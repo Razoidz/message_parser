@@ -1,0 +1,15 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+pyenv/
+
+# IDE / Editor environments
+.idea/
+.vscode/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+chat.db
