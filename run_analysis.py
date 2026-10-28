@@ -11,7 +11,7 @@ import sqlite3
 import sys
 
 from step2_parse_file import parse_file
-from step3_database import create_chat, create_tables, save_messages
+from step3_database import create_chat, create_tables, save_messages, to_iso
 from step4_prepare_text import load_messages, make_chunks
 from step5_extract import fake_model
 from step6_real_model import claude_model, extract_all
@@ -19,6 +19,18 @@ from step7_save_results import create_analysis_tables, save_results
 from step8_synthesize import fake_synth_model, synthesize
 from step9_save_analysis import add_supports_column, create_synthesis_tables, save_analysis
 from step11_run_status import add_status_columns, friendly_error, set_status, start_run
+
+
+class InputError(Exception):
+    """The file or settings are unusable. The message is safe to show to the user."""
+
+
+class AnalysisFailed(Exception):
+    """The model pipeline failed. Carries a friendly message and the run's id."""
+
+    def __init__(self, message, run_id):
+        super().__init__(message)
+        self.run_id = run_id
 
 
 def choose_models(use_fake):
@@ -60,29 +72,35 @@ def run_pipeline(conn, chat_id, run_id, extract_fn, synth_fn, chunk_size, overla
     save_analysis(conn, chat_id, run_id, analysis)
 
 
-def main(argv=None, models=None):
-    ap = argparse.ArgumentParser(description="Analyze a WhatsApp chat export.")
-    ap.add_argument("file", help="path to the exported chat .txt file")
-    ap.add_argument("--title", default=None)
-    ap.add_argument("--chunk-size", type=int, default=150)
-    ap.add_argument("--overlap", type=int, default=10)
-    ap.add_argument("--fake", action="store_true", help="use canned replies instead of the real model")
-    ap.add_argument("--i-have-consent", action="store_true", dest="consent",
-                    help="confirm you have the right to analyze this chat")
-    args = ap.parse_args(argv)
+def check_dates(parsed, monthfirst):
+    """Make sure every date can be read BEFORE anything is saved."""
+    try:
+        for m in parsed:
+            to_iso(m["date"], m["time"], not monthfirst)
+    except ValueError:
+        order = "month/day/year" if monthfirst else "day/month/year"
+        hint = "remove --monthfirst" if monthfirst else "add --monthfirst"
+        raise InputError(
+            f"Could not read a date in the file as {order}. "
+            f"If your export uses the other order, {hint}."
+        )
 
-    # Checks that must pass BEFORE we touch the database
-    if not args.consent:
-        sys.exit("Refusing to run: confirm you have the right to analyze this chat with --i-have-consent")
-    if not os.path.exists(args.file):
-        sys.exit(f"File not found: {args.file}")
-    extract_fn, synth_fn = models or choose_models(args.fake)
+
+def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size=150, overlap=10):
+    """Parse, save and analyze one chat file. Returns (chat_id, run_id).
+
+    Raises InputError for a bad file, and AnalysisFailed if the model pipeline breaks.
+    It never calls sys.exit, so the command line and the web app can both use it.
+    """
+    if not os.path.exists(path):
+        raise InputError(f"File not found: {path}")
 
     print("[1/6] Parsing the file")
-    parsed = parse_file(args.file)
+    parsed = parse_file(path)
     if not parsed:
-        sys.exit("No messages found. Check the file format.")
+        raise InputError("No messages found. Check the file format.")
     print(f"      {len(parsed)} messages")
+    check_dates(parsed, monthfirst)
 
     conn = sqlite3.connect("chat.db")
     create_tables(conn)
@@ -92,21 +110,53 @@ def main(argv=None, models=None):
     create_synthesis_tables(conn)
 
     print("[2/6] Saving messages")
-    chat_id = create_chat(conn, args.title)
-    save_messages(conn, chat_id, parsed)
+    chat_id = create_chat(conn, title)
+    save_messages(conn, chat_id, parsed, dayfirst=not monthfirst)
     run_id = start_run(conn, chat_id)  # status: running
 
     try:
-        run_pipeline(conn, chat_id, run_id, extract_fn, synth_fn, args.chunk_size, args.overlap)
+        run_pipeline(conn, chat_id, run_id, extract_fn, synth_fn, chunk_size, overlap)
     except KeyboardInterrupt:
         set_status(conn, run_id, "failed", "Cancelled by user")
-        sys.exit(f"\nCancelled. Run {run_id} was marked as failed.")
+        raise
     except Exception as e:
         message = friendly_error(e)
         set_status(conn, run_id, "failed", message)
-        sys.exit(f"\nAnalysis failed: {message}\n(Run {run_id} was marked as failed.)")
+        raise AnalysisFailed(message, run_id) from e
 
     set_status(conn, run_id, "done")
+    return chat_id, run_id
+
+
+def main(argv=None, models=None):
+    ap = argparse.ArgumentParser(description="Analyze a WhatsApp chat export.")
+    ap.add_argument("file", help="path to the exported chat .txt file")
+    ap.add_argument("--title", default=None)
+    ap.add_argument("--chunk-size", type=int, default=150)
+    ap.add_argument("--overlap", type=int, default=10)
+    ap.add_argument("--monthfirst", action="store_true",
+                    help="dates in the file are MM/DD/YYYY (default is DD/MM/YYYY)")
+    ap.add_argument("--fake", action="store_true", help="use canned replies instead of the real model")
+    ap.add_argument("--i-have-consent", action="store_true", dest="consent",
+                    help="confirm you have the right to analyze this chat")
+    args = ap.parse_args(argv)
+
+    if not args.consent:
+        sys.exit("Refusing to run: confirm you have the right to analyze this chat with --i-have-consent")
+    extract_fn, synth_fn = models or choose_models(args.fake)
+
+    try:
+        chat_id, run_id = analyze_file(
+            args.file, args.title, extract_fn, synth_fn,
+            monthfirst=args.monthfirst, chunk_size=args.chunk_size, overlap=args.overlap,
+        )
+    except InputError as e:
+        sys.exit(str(e))
+    except AnalysisFailed as e:
+        sys.exit(f"\nAnalysis failed: {e}\n(Run {e.run_id} was marked as failed.)")
+    except KeyboardInterrupt:
+        sys.exit("\nCancelled. The run was marked as failed.")
+
     print(f"\nDone. Chat {chat_id}, analysis run {run_id}.")
     print("Run  python3 step10_web.py  and open http://127.0.0.1:5000 to view it.")
 
