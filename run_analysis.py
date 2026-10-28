@@ -37,7 +37,7 @@ def choose_models(use_fake):
     if use_fake:
         return fake_model, fake_synth_model
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("No ANTHROPIC_API_KEY found. Set it, or add --fake to test with canned replies.")
+            raise InputError("No ANTHROPIC_API_KEY found. Set it, or use test mode (--fake on the command line).")
     return claude_model, claude_model  # the same function serves both passes
 
 
@@ -79,10 +79,10 @@ def check_dates(parsed, monthfirst):
             to_iso(m["date"], m["time"], not monthfirst)
     except ValueError:
         order = "month/day/year" if monthfirst else "day/month/year"
-        hint = "remove --monthfirst" if monthfirst else "add --monthfirst"
         raise InputError(
             f"Could not read a date in the file as {order}. "
-            f"If your export uses the other order, {hint}."
+            "If your export uses the other date order, switch the date-order setting "
+            "(--monthfirst on the command line)."
         )
 
 
@@ -96,7 +96,10 @@ def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size
         raise InputError(f"File not found: {path}")
 
     print("[1/6] Parsing the file")
-    parsed = parse_file(path)
+    try:
+        parsed = parse_file(path)
+    except UnicodeDecodeError:
+        raise InputError("That file is not readable UTF-8 text. Export the chat as a plain .txt file.")
     if not parsed:
         raise InputError("No messages found. Check the file format.")
     print(f"      {len(parsed)} messages")
@@ -143,10 +146,10 @@ def main(argv=None, models=None):
 
     if not args.consent:
         sys.exit("Refusing to run: confirm you have the right to analyze this chat with --i-have-consent")
-    extract_fn, synth_fn = models or choose_models(args.fake)
-
     try:
+        extract_fn, synth_fn = models or choose_models(args.fake)
         chat_id, run_id = analyze_file(
+
             args.file, args.title, extract_fn, synth_fn,
             monthfirst=args.monthfirst, chunk_size=args.chunk_size, overlap=args.overlap,
         )
