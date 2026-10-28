@@ -1,19 +1,19 @@
 import re
-
+from datetime import datetime
 # Matches Android: 12/03/2024, 14:05 - Alice: hi
 # and iPhone:      [12/03/2024, 14:05:22] Alice: hi
 LINE = re.compile(
-    r"^\[?(\d{1,2}/\d{1,2}/\d{4}), (\d{1,2}:\d{2})(?::\d{2})?\]? ?-? ?([^:]+): (.*)$"
+    r"^\[?(\d{1,2}/\d{1,2}/\d{4}), (\d{1,2}:\d{2})(?::\d{2})?(?:\s?([AaPp][Mm]))?\]? ?-? ?([^:]+): (.*)$"
 )
-
 
 def parse_line(line):
     match = LINE.match(line)
     if match is None:
         return None
-    date, time, sender, text = match.groups()
+    date, time, ampm, sender, text = match.groups()
+    if ampm:  # convert 2:08 PM into 14:08 so the rest of the program only sees 24-hour times
+        time = datetime.strptime(f"{time} {ampm.upper()}", "%I:%M %p").strftime("%H:%M")
     return {"date": date, "time": time, "sender": sender, "text": text}
-
 
 if __name__ == "__main__":
     tests = [

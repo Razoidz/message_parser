@@ -13,7 +13,7 @@ def parse_file(path):
 
     with open(path, encoding="utf-8") as f:
         for raw in f:
-            line = raw.rstrip("\n")
+            line = raw.replace("\u200e", "").rstrip("\n")  # drop invisible left-to-right marks
             parsed = parse_line(line)
             if parsed:
                 messages.append(parsed)
