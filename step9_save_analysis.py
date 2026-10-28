@@ -74,7 +74,7 @@ def save_analysis(conn, chat_id, run_id, analysis):
         "INSERT INTO summaries (run_id, narrative, limitations) VALUES (?, ?, ?)",
         (run_id, narrative, json.dumps(analysis["limitations"])),
     )
-    cited = sorted(set(re.findall(r"msg_\d+", narrative)))
+    cited = sorted(r for r in set(re.findall(r"msg_\d+", narrative)) if r in ref_to_message)
     link_evidence(conn, run_id, "narrative", run_id, cited, ref_to_message)
     conn.commit()
 
