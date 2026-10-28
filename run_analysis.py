@@ -85,12 +85,21 @@ def check_dates(parsed, monthfirst):
             "(--monthfirst on the command line)."
         )
 
+def open_database():
+    """Open chat.db and make sure every table exists."""
+    conn = sqlite3.connect("chat.db")
+    create_tables(conn)
+    create_analysis_tables(conn)
+    add_supports_column(conn)
+    add_status_columns(conn)
+    create_synthesis_tables(conn)
+    return conn
 
-def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size=150, overlap=10):
-    """Parse, save and analyze one chat file. Returns (chat_id, run_id).
 
-    Raises InputError for a bad file, and AnalysisFailed if the model pipeline breaks.
-    It never calls sys.exit, so the command line and the web app can both use it.
+def prepare_analysis(path, title, monthfirst=False):
+    """The quick part: check the file, save the messages, record a run as 'running'.
+
+    Returns (chat_id, run_id). Raises InputError if the file is unusable.
     """
     if not os.path.exists(path):
         raise InputError(f"File not found: {path}")
@@ -105,20 +114,24 @@ def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size
     print(f"      {len(parsed)} messages")
     check_dates(parsed, monthfirst)
 
-    conn = sqlite3.connect("chat.db")
-    create_tables(conn)
-    create_analysis_tables(conn)
-    add_supports_column(conn)
-    add_status_columns(conn)
-    create_synthesis_tables(conn)
-
+    conn = open_database()
     print("[2/6] Saving messages")
     chat_id = create_chat(conn, title)
     save_messages(conn, chat_id, parsed, dayfirst=not monthfirst)
     run_id = start_run(conn, chat_id)  # status: running
+    conn.close()
+    return chat_id, run_id
 
+
+def execute_analysis(chat_id, run_id, extract_fn, synth_fn, chunk_size=150, overlap=10):
+    """The slow part: the model calls. Marks the run 'done' or 'failed'.
+
+    Raises AnalysisFailed if the pipeline breaks, after recording the failure on the run.
+    """
+    conn = sqlite3.connect("chat.db")  # its own connection, so this can run in another thread
     try:
         run_pipeline(conn, chat_id, run_id, extract_fn, synth_fn, chunk_size, overlap)
+        set_status(conn, run_id, "done")
     except KeyboardInterrupt:
         set_status(conn, run_id, "failed", "Cancelled by user")
         raise
@@ -126,10 +139,19 @@ def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size
         message = friendly_error(e)
         set_status(conn, run_id, "failed", message)
         raise AnalysisFailed(message, run_id) from e
+    finally:
+        conn.close()
 
-    set_status(conn, run_id, "done")
+
+def analyze_file(path, title, extract_fn, synth_fn, monthfirst=False, chunk_size=150, overlap=10):
+    """Do both phases one after the other (the command line uses this). Returns (chat_id, run_id).
+
+    Raises InputError for a bad file, and AnalysisFailed if the model pipeline breaks.
+    It never calls sys.exit, so the command line and the web app can both use it.
+    """
+    chat_id, run_id = prepare_analysis(path, title, monthfirst)
+    execute_analysis(chat_id, run_id, extract_fn, synth_fn, chunk_size, overlap)
     return chat_id, run_id
-
 
 def main(argv=None, models=None):
     ap = argparse.ArgumentParser(description="Analyze a WhatsApp chat export.")

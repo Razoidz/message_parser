@@ -70,3 +70,9 @@ def test_real_mode_without_an_api_key_stops_with_a_message(chat_file, monkeypatc
     with pytest.raises(SystemExit) as exc:
         run_analysis.main([chat_file, "--i-have-consent"])
     assert "ANTHROPIC_API_KEY" in str(exc.value)
+def test_prepare_then_execute_runs_in_two_phases(chat_file):
+    chat_id, run_id = run_analysis.prepare_analysis(chat_file, "t")
+    assert statuses() == [("running", None)]
+
+    run_analysis.execute_analysis(chat_id, run_id, run_analysis.fake_model, run_analysis.fake_synth_model)
+    assert statuses() == [("done", None)]
