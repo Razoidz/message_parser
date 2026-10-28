@@ -1,12 +1,16 @@
 import json
+import os
 import sqlite3
+import tempfile
 
-from flask import Flask, abort, render_template_string
+from flask import Flask, abort, redirect, render_template_string, request, url_for
 
+from run_analysis import AnalysisFailed, InputError, analyze_file, choose_models
 from step9_save_analysis import get_evidence
 from step11_run_status import add_status_columns
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # reject uploads over 5 MB
 
 
 def db():
@@ -73,11 +77,14 @@ STYLE = """
   .done { background: #cfe9cf; } .running { background: #fbe9b7; } .failed { background: #f4cccc; }
   .note { color: #666; font-size: .9rem; }
   summary { cursor: pointer; color: #345; }
+  input[type=text] { width: 100%; padding: .4rem; box-sizing: border-box; }
+  button { padding: .5rem 1.2rem; font-size: 1rem; }
 </style>
 """
 
 HOME = STYLE + """
 <h1>Chat analyses</h1>
+<p><a href="/upload">+ Analyze a new chat</a></p>
 {% if runs %}
   {% for id, title, created, status in runs %}
     <div class="card"><a href="/run/{{ id }}">Run {{ id }}: {{ title or "Untitled chat" }}</a>
@@ -134,6 +141,26 @@ RUN = STYLE + """
 <ul>{% for item in run.limitations %}<li>{{ item }}</li>{% endfor %}</ul>
 """
 
+UPLOAD = STYLE + """
+<p><a href="/">&larr; All analyses</a></p>
+<h1>Analyze a chat</h1>
+{% if error %}<div class="card failed">{{ error }}</div>{% endif %}
+<form method="post" enctype="multipart/form-data">
+  <p><label>WhatsApp export (.txt, up to 5 MB)<br>
+    <input type="file" name="chat_file" accept=".txt,text/plain" required></label></p>
+  <p><label>Title (optional)<br>
+    <input type="text" name="title" value="{{ title }}" maxlength="100"></label></p>
+  <p>Date order in the file:<br>
+    <label><input type="radio" name="date_order" value="dayfirst" checked> Day/Month/Year (25/03/2024)</label><br>
+    <label><input type="radio" name="date_order" value="monthfirst"> Month/Day/Year (03/25/2024)</label></p>
+  <p><label><input type="checkbox" name="consent" value="yes" required>
+    I have the right to analyze this chat.</label></p>
+  <p><label><input type="checkbox" name="fake" value="yes">
+    Test mode (canned replies, no API key needed)</label></p>
+  <button type="submit">Analyze</button>
+</form>
+<p class="note">Analysis can take a while on long chats, and this page waits until it finishes.</p>
+"""
 
 @app.route("/")
 def home():
@@ -152,7 +179,44 @@ def run_page(run_id):
     if run is None:
         abort(404)
     return render_template_string(RUN, run=run)
+@app.route("/upload", methods=["GET", "POST"])
+def upload():
+    if request.method == "GET":
+        return render_template_string(UPLOAD, error=None, title="")
 
+    title = request.form.get("title", "").strip()[:100]
+    chat_file = request.files.get("chat_file")
+
+    # Never trust the browser's own checks: validate again on the server
+    if request.form.get("consent") != "yes":
+        error = "Please confirm you have the right to analyze this chat."
+    elif chat_file is None or chat_file.filename == "":
+        error = "Please choose a chat file."
+    else:
+        error = None
+    if error:
+        return render_template_string(UPLOAD, error=error, title=title), 400
+
+    try:
+        extract_fn, synth_fn = choose_models(request.form.get("fake") == "yes")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "chat.txt")  # our own name, never the uploaded one
+            chat_file.save(path)
+            _, run_id = analyze_file(
+                path, title or None, extract_fn, synth_fn,
+                monthfirst=request.form.get("date_order") == "monthfirst",
+            )
+    except InputError as e:
+        return render_template_string(UPLOAD, error=str(e), title=title), 400
+    except AnalysisFailed as e:
+        return redirect(url_for("run_page", run_id=e.run_id))  # that page explains the failure
+    return redirect(url_for("run_page", run_id=run_id))
+
+
+@app.errorhandler(413)
+def too_large(error):
+    message = "That file is too large (the limit is 5 MB). Export the chat without media."
+    return render_template_string(UPLOAD, error=message, title=""), 413
 
 if __name__ == "__main__":
     app.run(debug=True)

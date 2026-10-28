@@ -56,13 +56,13 @@ def get_or_create_participant(conn, chat_id, name):
     return row[0]
 
 
-def save_messages(conn, chat_id, messages):
+def save_messages(conn, chat_id, messages,dayfirst=True):
     for seq, m in enumerate(messages, start=1):
         pid = get_or_create_participant(conn, chat_id, m["sender"])
         conn.execute(
             "INSERT INTO messages (chat_id, seq, sent_at, participant_id, text) "
             "VALUES (?, ?, ?, ?, ?)",
-            (chat_id, seq, to_iso(m["date"], m["time"]), pid, m["text"]),
+            (chat_id, seq, to_iso(m["date"], m["time"], dayfirst), pid, m["text"]),
         )
     conn.commit()
 

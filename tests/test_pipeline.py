@@ -65,3 +65,8 @@ def test_month_first_export_needs_the_flag(tmp_path, monkeypatch):
 
     run_analysis.main(["chat.txt", "--fake", "--i-have-consent", "--monthfirst"])
     assert statuses() == [("done", None)]
+def test_real_mode_without_an_api_key_stops_with_a_message(chat_file, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        run_analysis.main([chat_file, "--i-have-consent"])
+    assert "ANTHROPIC_API_KEY" in str(exc.value)
