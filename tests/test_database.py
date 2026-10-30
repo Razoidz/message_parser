@@ -3,7 +3,7 @@ import sqlite3
 from step3_database import create_chat, create_tables, save_messages, to_iso
 from step4_prepare_text import load_messages
 from step7_save_results import create_analysis_tables, create_run, get_evidence, save_results
-
+from step9_save_analysis import add_supports_column, create_synthesis_tables, save_analysis
 PARSED = [
     {"date": "12/03/2024", "time": "14:05", "sender": "Alice", "text": "hi"},
     {"date": "12/03/2024", "time": "14:05", "sender": "Bob", "text": "hello"},
@@ -74,3 +74,17 @@ def test_month_first_dates_are_saved_correctly():
     parsed = [{"date": "03/25/2024", "time": "14:05", "sender": "Alice", "text": "hi"}]
     save_messages(conn, chat, parsed, dayfirst=False)
     assert load_messages(conn, chat)[0]["sent_at"] == "2024-03-25T14:05:00"
+def test_saving_a_narrative_that_cites_a_missing_message_does_not_crash():
+    conn = fresh_db()
+    add_supports_column(conn)
+    create_synthesis_tables(conn)
+    chat = create_chat(conn, "t")
+    save_messages(conn, chat, PARSED)
+    run_id = create_run(conn, chat)
+    analysis = {"timeline": [], "roles": [], "limitations": [],
+                "how_it_unfolded": "Alice spoke [msg_1], then [msg_42]."}
+
+    save_analysis(conn, chat, run_id, analysis)
+
+    rows = conn.execute("SELECT message_id FROM evidence WHERE claim_type = 'narrative'").fetchall()
+    assert len(rows) == 1  # only the real citation was stored

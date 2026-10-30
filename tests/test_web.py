@@ -14,9 +14,8 @@ SAMPLE = (
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # every test gets its own empty chat.db
+    monkeypatch.setattr(step10_web, "launch", lambda job: job())  # run background jobs inline
     return app.test_client()
-
-
 def post(client, data=SAMPLE, **fields):
     form = {
         "chat_file": (io.BytesIO(data), "whatever-name.txt"),
@@ -116,3 +115,21 @@ def test_pipeline_failure_redirects_to_a_page_that_explains_it(client, monkeypat
 def test_uploaded_filename_is_never_used(client, tmp_path):
     post(client)
     assert not list(tmp_path.glob("*whatever*"))
+def test_upload_redirects_at_once_and_the_page_shows_running_until_the_job_finishes(client, monkeypatch):
+    jobs = []
+    monkeypatch.setattr(step10_web, "launch", jobs.append)  # collect the job instead of running it
+
+    response = post(client)
+    assert response.status_code == 302
+    assert len(jobs) == 1
+
+    page = text(client.get("/run/1"))
+    assert "still running" in page
+    assert "location.reload" in page  # the page refreshes itself
+
+    jobs[0]()  # now let the analysis run
+
+    page = text(client.get("/run/1"))
+    assert "still running" not in page
+    assert "location.reload" not in page
+    assert "initiator" in page  # the finished results are shown

@@ -2,10 +2,11 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 
 from flask import Flask, abort, redirect, render_template_string, request, url_for
 
-from run_analysis import AnalysisFailed, InputError, analyze_file, choose_models
+from run_analysis import AnalysisFailed, InputError, choose_models, execute_analysis, prepare_analysis
 from step9_save_analysis import get_evidence
 from step11_run_status import add_status_columns
 
@@ -26,7 +27,7 @@ def as_messages(rows):
 def load_run(conn, run_id):
     """Gather everything the page needs for one analysis run, or None if it doesn't exist."""
     run = conn.execute("""
-        SELECT r.id, c.title, r.created_at, r.status, r.error
+        SELECT r.~id, c.title, r.created_at, r.status, r.error
         FROM analysis_runs r JOIN chats c ON c.id = r.chat_id
         WHERE r.id = ?
     """, (run_id,)).fetchone()
@@ -92,7 +93,7 @@ HOME = STYLE + """
     <div class="note">{{ created }}</div></div>
   {% endfor %}
 {% else %}
-  <p>No analyses yet. Run step9_save_analysis.py first.</p>
+  <p>No analyses yet. <a href="/upload">Upload a chat</a> to get started.</p>
 {% endif %}
 """
 
@@ -104,7 +105,9 @@ RUN = STYLE + """
 {% if run.status == "failed" %}
   <div class="card failed"><strong>This analysis failed.</strong> {{ run.error }}</div>
 {% elif run.status == "running" %}
-  <div class="card running">This analysis is still running, or was interrupted.</div>
+  <div class="card running">This analysis is still running. This page refreshes by itself every few
+  seconds. If it stays like this for a long time, the server may have been restarted.</div>
+  <script>setTimeout(function () { location.reload(); }, 3000);</script>
 {% endif %}
 
 <h2>Roles</h2>
@@ -141,6 +144,7 @@ RUN = STYLE + """
 <ul>{% for item in run.limitations %}<li>{{ item }}</li>{% endfor %}</ul>
 """
 
+
 UPLOAD = STYLE + """
 <p><a href="/">&larr; All analyses</a></p>
 <h1>Analyze a chat</h1>
@@ -159,8 +163,9 @@ UPLOAD = STYLE + """
     Test mode (canned replies, no API key needed)</label></p>
   <button type="submit">Analyze</button>
 </form>
-<p class="note">Analysis can take a while on long chats, and this page waits until it finishes.</p>
+<p class="note">Long chats can take a few minutes. After you submit, the results page updates by itself while the analysis runs.</p>
 """
+
 
 @app.route("/")
 def home():
@@ -179,6 +184,20 @@ def run_page(run_id):
     if run is None:
         abort(404)
     return render_template_string(RUN, run=run)
+
+
+def launch(job):
+    """Run a function in the background. Tests replace this so they control the timing."""
+    threading.Thread(target=job, daemon=True).start()
+
+
+def run_in_background(chat_id, run_id, extract_fn, synth_fn):
+    try:
+        execute_analysis(chat_id, run_id, extract_fn, synth_fn)
+    except AnalysisFailed:
+        pass  # already recorded on the run; the results page shows the reason
+
+
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
     if request.method == "GET":
@@ -202,14 +221,15 @@ def upload():
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "chat.txt")  # our own name, never the uploaded one
             chat_file.save(path)
-            _, run_id = analyze_file(
-                path, title or None, extract_fn, synth_fn,
+            chat_id, run_id = prepare_analysis(
+                path, title or None,
                 monthfirst=request.form.get("date_order") == "monthfirst",
             )
     except InputError as e:
         return render_template_string(UPLOAD, error=str(e), title=title), 400
-    except AnalysisFailed as e:
-        return redirect(url_for("run_page", run_id=e.run_id))  # that page explains the failure
+
+    # The slow part runs in the background; the browser goes straight to the results page
+    launch(lambda: run_in_background(chat_id, run_id, extract_fn, synth_fn))
     return redirect(url_for("run_page", run_id=run_id))
 
 
@@ -217,6 +237,7 @@ def upload():
 def too_large(error):
     message = "That file is too large (the limit is 5 MB). Export the chat without media."
     return render_template_string(UPLOAD, error=message, title=""), 413
+
 
 if __name__ == "__main__":
     app.run(debug=True)
